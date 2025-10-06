@@ -1,1 +1,75 @@
+/*************************************************************
 
+  This is a simple demo of sending and receiving some data.
+  Be sure to check out other examples!
+ *************************************************************/
+
+/* Fill-in information from Blynk Device Info here */
+#define BLYNK_TEMPLATE_ID "TMPL6LlNvZAfa"
+#define BLYNK_TEMPLATE_NAME "Quickstart Template"
+#define BLYNK_AUTH_TOKEN "0_stlcuMaMfAWZ9gJ9aQoOhiX4fRkWdJ"
+
+/* Comment this out to disable prints and save space */
+#define BLYNK_PRINT Serial
+
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <Servo.h>
+
+// Your WiFi credentials.
+// Set password to "" for open networks.
+char ssid[] = "STARLINK-RENJAR (2,4 GHz)";
+char pass[] = "abatasaja";
+
+Servo servoMotor; // Membuat objek untuk servo
+
+const int pinServo = D4; // Pin D4 (GPIO2) di NodeMCU untuk sinyal servo
+const int servoStop = 90; // Nilai untuk menghentikan servo
+const int servoKanan = 180; // Nilai untuk putar kanan (kecepatan penuh)
+const int servoKiri = 0;   // Nilai untuk putar kiri (kecepatan penuh)
+
+// Fungsi ini berjalan saat tombol di V1 (Putar Kanan) ditekan/dilepas
+BLYNK_WRITE(V1)
+{
+  int statusTombol = param.asInt(); // Ambil status tombol (1 jika ditekan, 0 jika dilepas)
+
+  if (statusTombol == 1) {
+    servoMotor.write(servoKanan); // Jika ditekan, putar servo ke kanan
+    Serial.println("Tombol Kanan DITEKAN - Servo berputar");
+  } else {
+    servoMotor.write(servoStop); // Jika dilepas, hentikan servo
+    Serial.println("Tombol Kanan DILEPAS - Servo berhenti");
+  }
+}
+
+// Fungsi ini berjalan saat tombol di V2 (Putar Kiri) ditekan/dilepas
+BLYNK_WRITE(V2)
+{
+  int statusTombol = param.asInt(); // Ambil status tombol (1 jika ditekan, 0 jika dilepas)
+
+  if (statusTombol == 1) {
+    servoMotor.write(servoKiri); // Jika ditekan, putar servo ke kiri
+    Serial.println("Tombol Kiri DITEKAN - Servo berputar");
+  } else {
+    servoMotor.write(servoStop); // Jika dilepas, hentikan servo
+    Serial.println("Tombol Kiri DILEPAS - Servo berhenti");
+  }
+}
+
+void setup()
+{
+  Serial.begin(9600);
+  
+  // FIX: Use BLYNK_AUTH_TOKEN instead of undefined 'auth'
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // Hubungkan objek servo ke pin fisik
+  servoMotor.attach(pinServo);
+  // Pastikan servo berhenti saat program pertama kali dimulai
+  servoMotor.write(servoStop);
+}
+
+void loop()
+{
+  Blynk.run();
+}
