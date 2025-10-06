@@ -5,9 +5,9 @@
  *************************************************************/
 
 /* Fill-in information from Blynk Device Info here */
-#define BLYNK_TEMPLATE_ID "TMPL6LlNvZAfa"
-#define BLYNK_TEMPLATE_NAME "Quickstart Template"
-#define BLYNK_AUTH_TOKEN "0_stlcuMaMfAWZ9gJ9aQoOhiX4fRkWdJ"
+#define BLYNK_TEMPLATE_ID           "TMPL6N3B7OSwG"
+#define BLYNK_TEMPLATE_NAME         "Quickstart Template"
+#define BLYNK_AUTH_TOKEN            "NCwhA6fHE-PTCiJ_6wEo66ijbjEjSdme"
 
 /* Comment this out to disable prints and save space */
 #define BLYNK_PRINT Serial
@@ -29,7 +29,7 @@ const int servoKanan = 180; // Nilai untuk putar kanan (kecepatan penuh)
 const int servoKiri = 0;   // Nilai untuk putar kiri (kecepatan penuh)
 
 // Fungsi ini berjalan saat tombol di V1 (Putar Kanan) ditekan/dilepas
-BLYNK_WRITE(V1)
+BLYNK_WRITE(V4)
 {
   int statusTombol = param.asInt(); // Ambil status tombol (1 jika ditekan, 0 jika dilepas)
 
@@ -43,7 +43,7 @@ BLYNK_WRITE(V1)
 }
 
 // Fungsi ini berjalan saat tombol di V2 (Putar Kiri) ditekan/dilepas
-BLYNK_WRITE(V2)
+BLYNK_WRITE(V5)
 {
   int statusTombol = param.asInt(); // Ambil status tombol (1 jika ditekan, 0 jika dilepas)
 
