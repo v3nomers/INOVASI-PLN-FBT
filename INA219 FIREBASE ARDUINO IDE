@@ -1,0 +1,420 @@
+/*************************************************************
+  PROGRAM LENGKAP: INA219 BATTERY MONITOR + FIREBASE
+  Fitur: Monitoring real-time, kontrol LED, system info
+  NodeMCU dengan INA219 untuk monitoring baterai/panel surya
+*************************************************************/
+
+#include <ESP8266WiFi.h>
+#include <FirebaseESP8266.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
+// ==================== KONFIGURASI ====================
+// 1. WiFi Credentials
+#define WIFI_SSID "STARLINK-RENJAR (2,4 GHz)"
+#define WIFI_PASSWORD "abatasaja"
+
+// 2. Firebase Configuration
+#define FIREBASE_HOST "ina219-up3fbt-default-rtdb.firebaseio.com"
+#define FIREBASE_AUTH ""  // Kosongkan untuk testing
+
+// 3. INA219 Pin Configuration
+#define SDA_PIN D2
+#define SCL_PIN D1
+
+// 4. Monitoring Settings
+#define DATA_INTERVAL 2000    // Kirim data setiap 2 detik
+#define SERIAL_UPDATE 5000    // Serial print setiap 5 detik
+#define WIFI_CHECK_INTERVAL 30000  // Cek WiFi setiap 30 detik
+
+// ==================== VARIABEL GLOBAL ====================
+Adafruit_INA219 ina219;
+FirebaseData firebaseData;
+
+// Status variables
+bool ina219Connected = false;
+bool firebaseConnected = false;
+bool systemOK = false;
+
+// Timing variables
+unsigned long lastDataSend = 0;
+unsigned long lastSerialPrint = 0;
+unsigned long lastWifiCheck = 0;
+unsigned long startTime = 0;
+
+// Sensor data storage
+struct SensorData {
+  float busVoltage;
+  float shuntVoltage; 
+  float current;
+  float power;
+  float loadVoltage;
+};
+SensorData currentData;
+
+// Statistics
+float minVoltage = 999.0;
+float maxVoltage = 0.0;
+float minCurrent = 999.0;
+float maxCurrent = 0.0;
+float totalEnergy = 0.0; // mWh
+
+// ==================== SETUP ====================
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  displayHeader();
+  startTime = millis();
+  
+  // Initialize components step by step
+  initializeSystem();
+  
+  Serial.println("\n🎉 SYSTEM READY - Starting Real-time Monitoring");
+  Serial.println("=============================================");
+  displaySystemInfo();
+}
+
+// ==================== LOOP PRINCIPAL ====================
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // 1. Baca data sensor
+  readSensorData();
+  
+  // 2. Kirim ke Firebase secara periodic
+  if (currentTime - lastDataSend >= DATA_INTERVAL) {
+    sendDataToFirebase();
+    lastDataSend = currentTime;
+  }
+  
+  // 3. Tampilkan di Serial secara periodic
+  if (currentTime - lastSerialPrint >= SERIAL_UPDATE) {
+    displaySensorData();
+    lastSerialPrint = currentTime;
+  }
+  
+  // 4. Cek koneksi WiFi secara periodic
+  if (currentTime - lastWifiCheck >= WIFI_CHECK_INTERVAL) {
+    checkWiFiConnection();
+    lastWifiCheck = currentTime;
+  }
+  
+  // 5. Cek perintah dari Firebase
+  checkFirebaseCommands();
+  
+  delay(100);
+}
+
+// ==================== FUNGSI INITIALIZATION ====================
+void initializeSystem() {
+  Serial.println("\n🔧 INITIALIZING SYSTEM COMPONENTS...");
+  Serial.println("===================================");
+  
+  // Step 1: Initialize I2C
+  if (!initializeI2C()) {
+    systemHalt("I2C Initialization Failed");
+  }
+  
+  // Step 2: Initialize INA219
+  if (!initializeINA219()) {
+    systemHalt("INA219 Initialization Failed");
+  }
+  
+  // Step 3: Connect to WiFi
+  if (!connectToWiFi()) {
+    systemHalt("WiFi Connection Failed");
+  }
+  
+  // Step 4: Initialize Firebase
+  initializeFirebase();
+  
+  systemOK = true;
+}
+
+bool initializeI2C() {
+  Serial.println("\n1. 📡 INITIALIZING I2C COMMUNICATION");
+  Serial.print("   Starting I2C (SDA=D2, SCL=D1)...");
+  
+  Wire.begin(SDA_PIN, SCL_PIN);
+  delay(1000);
+  
+  // Scan I2C devices
+  byte devicesFound = scanI2CDevices();
+  
+  if (devicesFound > 0) {
+    Serial.println("✅ OK");
+    Serial.printf("   Found %d I2C device(s)\n", devicesFound);
+    return true;
+  } else {
+    Serial.println("❌ FAILED");
+    return false;
+  }
+}
+
+byte scanI2CDevices() {
+  byte count = 0;
+  Serial.println("   Scanning I2C bus...");
+  
+  for (byte address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+    
+    if (error == 0) {
+      Serial.printf("   ✅ Device: 0x%02X\n", address);
+      count++;
+    }
+  }
+  return count;
+}
+
+bool initializeINA219() {
+  Serial.println("\n2. 🔋 INITIALIZING INA219 SENSOR");
+  Serial.print("   Starting INA219...");
+  
+  if (ina219.begin()) {
+    ina219Connected = true;
+    ina219.setCalibration_32V_2A();
+    Serial.println("✅ OK");
+    
+    // Test reading
+    float testVoltage = ina219.getBusVoltage_V();
+    Serial.printf("   Test Reading: %.2f V\n", testVoltage);
+    
+    if (testVoltage > 0.1) {
+      Serial.println("   ✅ SENSOR READINGS OK");
+    } else {
+      Serial.println("   ⚠️  LOW VOLTAGE - Check connections");
+    }
+    return true;
+  } else {
+    Serial.println("❌ FAILED");
+    return false;
+  }
+}
+
+bool connectToWiFi() {
+  Serial.println("\n3. 📶 CONNECTING TO WIFI");
+  Serial.printf("   SSID: %s\n", WIFI_SSID);
+  Serial.print("   Connecting");
+  
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < 30) {
+    delay(500);
+    Serial.print(".");
+    timeout++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("✅ CONNECTED");
+    Serial.printf("   IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("   RSSI: %d dBm\n", WiFi.RSSI());
+    return true;
+  } else {
+    Serial.println("❌ FAILED");
+    return false;
+  }
+}
+
+void initializeFirebase() {
+  Serial.println("\n4. 🔥 INITIALIZING FIREBASE");
+  Serial.print("   Connecting to Firebase...");
+  
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  Firebase.reconnectWiFi(true);
+  
+  // Configure Firebase
+  firebaseData.setBSSLBufferSize(1024, 1024);
+  firebaseData.setResponseSize(1024);
+  
+  // Test connection
+  if (Firebase.setString(firebaseData, "/system/status", "online")) {
+    firebaseConnected = true;
+    Serial.println("✅ CONNECTED");
+    
+    // Set initial values
+    Firebase.setString(firebaseData, "/system/device", "NodeMCU-INA219");
+    Firebase.setString(firebaseData, "/system/version", "2.0");
+    Firebase.setString(firebaseData, "/control/led", "OFF");
+    
+  } else {
+    Serial.println("❌ FAILED");
+    Serial.println("   Error: " + firebaseData.errorReason());
+  }
+}
+
+// ==================== FUNGSI SENSOR & DATA ====================
+void readSensorData() {
+  if (!ina219Connected) return;
+  
+  currentData.busVoltage = ina219.getBusVoltage_V();
+  currentData.shuntVoltage = ina219.getShuntVoltage_mV();
+  currentData.current = ina219.getCurrent_mA();
+  currentData.power = ina219.getPower_mW();
+  currentData.loadVoltage = currentData.busVoltage + (currentData.shuntVoltage / 1000);
+  
+  // Update statistics
+  updateStatistics();
+  
+  // Calculate energy consumption (mWh)
+  totalEnergy += (currentData.power * (DATA_INTERVAL / 3600000.0));
+}
+
+void updateStatistics() {
+  // Update min/max voltage
+  if (currentData.busVoltage < minVoltage && currentData.busVoltage > 0.1) {
+    minVoltage = currentData.busVoltage;
+  }
+  if (currentData.busVoltage > maxVoltage) {
+    maxVoltage = currentData.busVoltage;
+  }
+  
+  // Update min/max current
+  float absCurrent = abs(currentData.current);
+  if (absCurrent < minCurrent && absCurrent > 0.1) {
+    minCurrent = absCurrent;
+  }
+  if (absCurrent > maxCurrent) {
+    maxCurrent = absCurrent;
+  }
+}
+
+void sendDataToFirebase() {
+  if (!ina219Connected) return;
+  
+  // System info
+  unsigned long uptime = (millis() - startTime) / 1000;
+  int wifiStrength = WiFi.RSSI();
+  
+  if (firebaseConnected) {
+    bool success = true;
+    
+    // Send sensor data
+    success &= Firebase.setFloat(firebaseData, "/sensor/bus_voltage", currentData.busVoltage);
+    success &= Firebase.setFloat(firebaseData, "/sensor/current", currentData.current);
+    success &= Firebase.setFloat(firebaseData, "/sensor/power", currentData.power);
+    success &= Firebase.setFloat(firebaseData, "/sensor/load_voltage", currentData.loadVoltage);
+    success &= Firebase.setFloat(firebaseData, "/sensor/shunt_voltage", currentData.shuntVoltage);
+    
+    // Send system info
+    success &= Firebase.setInt(firebaseData, "/system/uptime", uptime);
+    success &= Firebase.setInt(firebaseData, "/system/wifi_strength", wifiStrength);
+    success &= Firebase.setString(firebaseData, "/system/last_update", String(millis()));
+    
+    // Send statistics
+    success &= Firebase.setFloat(firebaseData, "/statistics/min_voltage", minVoltage);
+    success &= Firebase.setFloat(firebaseData, "/statistics/max_voltage", maxVoltage);
+    success &= Firebase.setFloat(firebaseData, "/statistics/min_current", minCurrent);
+    success &= Firebase.setFloat(firebaseData, "/statistics/max_current", maxCurrent);
+    success &= Firebase.setFloat(firebaseData, "/statistics/total_energy", totalEnergy);
+    
+    if (!success) {
+      Serial.println("❌ Firebase send failed: " + firebaseData.errorReason());
+    }
+  }
+}
+
+void checkFirebaseCommands() {
+  if (!firebaseConnected) return;
+  
+  // Check LED control
+  if (Firebase.getString(firebaseData, "/control/led")) {
+    String command = firebaseData.stringData();
+    
+    if (command == "ON") {
+      digitalWrite(LED_BUILTIN, LOW);
+      Firebase.setString(firebaseData, "/status/led", "ON");
+      Serial.println("💡 LED ON - Remote command");
+    } else if (command == "OFF") {
+      digitalWrite(LED_BUILTIN, HIGH);
+      Firebase.setString(firebaseData, "/status/led", "OFF");
+      Serial.println("💡 LED OFF - Remote command");
+    }
+  }
+  
+  // Check reset command
+  if (Firebase.getString(firebaseData, "/control/reset")) {
+    String command = firebaseData.stringData();
+    if (command == "true") {
+      Firebase.setString(firebaseData, "/control/reset", "false");
+      Serial.println("🔄 Reset command received");
+      // Bisa ditambahkan reset statistics di sini
+    }
+  }
+}
+
+// ==================== FUNGSI DISPLAY ====================
+void displayHeader() {
+  Serial.println();
+  Serial.println("╔══════════════════════════════════════╗");
+  Serial.println("║        INA219 + FIREBASE MONITOR     ║");
+  Serial.println("║         BATTERY MONITORING SYSTEM    ║");
+  Serial.println("╚══════════════════════════════════════╝");
+}
+
+void displaySystemInfo() {
+  Serial.println("\n📊 SYSTEM INFORMATION:");
+  Serial.println("─────────────────────");
+  Serial.printf("  Chip ID: 0x%X\n", ESP.getChipId());
+  Serial.printf("  Flash Size: %d MB\n", ESP.getFlashChipSize() / 1048576);
+  Serial.printf("  Free Heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("  SDK Version: %s\n", ESP.getSdkVersion());
+  Serial.printf("  Firebase Host: %s\n", FIREBASE_HOST);
+}
+
+void displaySensorData() {
+  Serial.println("\n📈 REAL-TIME SENSOR DATA:");
+  Serial.println("────────────────────────");
+  Serial.printf("  🔋 Bus Voltage: %.2f V\n", currentData.busVoltage);
+  Serial.printf("  ⚡ Current: %.1f mA\n", currentData.current);
+  Serial.printf("  💡 Power: %.0f mW\n", currentData.power);
+  Serial.printf("  🔌 Load Voltage: %.2f V\n", currentData.loadVoltage);
+  Serial.printf("  📶 WiFi: %d dBm\n", WiFi.RSSI());
+  Serial.printf("  ⏱️  Uptime: %d seconds\n", (millis() - startTime) / 1000);
+  
+  Serial.println("\n📊 STATISTICS:");
+  Serial.println("─────────────");
+  Serial.printf("  Min Voltage: %.2f V\n", minVoltage);
+  Serial.printf("  Max Voltage: %.2f V\n", maxVoltage);
+  Serial.printf("  Max Current: %.1f mA\n", maxCurrent);
+  Serial.printf("  Total Energy: %.1f mWh\n", totalEnergy);
+  
+  // System status
+  Serial.println("\n🔧 SYSTEM STATUS:");
+  Serial.println("────────────────");
+  Serial.printf("  INA219: %s\n", ina219Connected ? "✅ CONNECTED" : "❌ DISCONNECTED");
+  Serial.printf("  Firebase: %s\n", firebaseConnected ? "✅ CONNECTED" : "❌ DISCONNECTED");
+  Serial.printf("  WiFi: %s\n", WiFi.status() == WL_CONNECTED ? "✅ CONNECTED" : "❌ DISCONNECTED");
+}
+
+void checkWiFiConnection() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠️  WiFi disconnected! Reconnecting...");
+    connectToWiFi();
+  }
+}
+
+void systemHalt(const char* message) {
+  Serial.println("\n❌ CRITICAL ERROR:");
+  Serial.println(message);
+  Serial.println("🛑 SYSTEM HALTED - Please check hardware and reset");
+  
+  while(1) {
+    // Blink LED sebagai indikator error
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(200);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(800);
+  }
+}
+
+// ==================== UTILITY FUNCTIONS ====================
+float calculateBatteryPercentage(float voltage) {
+  // Contoh untuk battery LiPo 3.7V
+  // Adjust sesuai battery yang digunakan
+  if (voltage >= 4.2) return 100.0;
+  if (voltage <= 3.3) return 0.0;
+  return ((voltage - 3.3) / (4.2 - 3.3)) * 100.0;
+}
